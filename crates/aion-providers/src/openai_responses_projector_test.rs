@@ -2,6 +2,7 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    use aion_types::llm::ToolChoice;
     use aion_types::tool::ToolDef;
     use serde_json::json;
 
@@ -63,6 +64,36 @@ mod tests {
         assert!(body.get("messages").is_none());
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn projects_explicit_tool_choice_when_tools_are_present() {
+        let mut required_request = request(Vec::new(), vec![tool()]);
+        required_request.tool_choice = Some(ToolChoice::Required);
+
+        let required_body = OpenAiResponsesProjector::project(&required_request, &ProviderCompat::openai_defaults())
+            .expect("Responses body should project");
+
+        assert_eq!(required_body["tool_choice"], "required");
+
+        let mut auto_request = request(Vec::new(), vec![tool()]);
+        auto_request.tool_choice = Some(ToolChoice::Auto);
+
+        let auto_body = OpenAiResponsesProjector::project(&auto_request, &ProviderCompat::openai_defaults())
+            .expect("Responses body should project");
+
+        assert_eq!(auto_body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn omits_tool_choice_without_tools() {
+        let mut request = request(Vec::new(), Vec::new());
+        request.tool_choice = Some(ToolChoice::Required);
+
+        let body = OpenAiResponsesProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("Responses body should project");
+
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]

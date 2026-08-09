@@ -139,7 +139,7 @@ impl AgentBootstrap {
         self
     }
 
-    /// Set tool selection for the first model turn of each user run.
+    /// Set tool selection for the first model turn of each user run when supported by the provider.
     pub fn initial_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
         self.initial_tool_choice = Some(tool_choice);
         self

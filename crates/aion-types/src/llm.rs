@@ -11,6 +11,7 @@ pub struct LlmRequest {
     pub messages: Vec<crate::message::Message>,
     pub tools: Vec<ToolDef>,
     /// Provider-neutral tool selection policy for this model turn.
+    /// Providers without an explicit wire mapping may ignore it.
     pub tool_choice: Option<ToolChoice>,
     pub max_tokens: Option<u32>,
     /// Optional: thinking config (Anthropic extended thinking)
