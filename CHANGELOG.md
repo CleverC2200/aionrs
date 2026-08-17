@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.11](https://github.com/iOfficeAI/aionrs/compare/v0.2.10...v0.2.11) (2026-08-13)
+
+
+### Features
+
+* **agent:** stamp per-run turn ids onto conversation messages ([5889110](https://github.com/iOfficeAI/aionrs/commit/5889110ce376d7e53ce2884147d892b32f2d72ac))
+* **session:** add session forking with lineage and turn-anchored boundaries ([df1cf85](https://github.com/iOfficeAI/aionrs/commit/df1cf851ae6fc106cb7b0836d4d31065e9415ba9))
+* **session:** support session forking with turn-anchored boundaries ([a48be3b](https://github.com/iOfficeAI/aionrs/commit/a48be3be6d551a88a8896da7e5bd39f5d0db6c83))
+
+
+### Documentation
+
+* refresh tool and provider documentation ([f7b000e](https://github.com/iOfficeAI/aionrs/commit/f7b000e1253909060ad565b6eb4a3869bc322d86))
+* refresh tool and provider documentation ([0a0efcf](https://github.com/iOfficeAI/aionrs/commit/0a0efcf0a9fb26798fe22aa6015b0d84b84a8b46))
+
 ## [0.2.10](https://github.com/iOfficeAI/aionrs/compare/v0.2.9...v0.2.10) (2026-08-06)
 
 

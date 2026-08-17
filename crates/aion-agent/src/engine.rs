@@ -48,6 +48,7 @@ use chrono::Utc;
 use serde_json::to_string;
 use tokio::sync::mpsc::Receiver;
 use tracing::{Instrument, debug, error, info, info_span, warn};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct AgentResult {
@@ -88,6 +89,14 @@ pub struct AgentEngine {
     total_usage: TokenUsage,
     /// Output message ID for the currently streaming run.
     msg_id: String,
+    /// Turn id for the NEXT run, supplied by the host (e.g. AionCore passes
+    /// its conversation-layer turn id so DB rows and session messages share
+    /// one anchor). Consumed by `run_inner`; when absent a fresh id is minted.
+    pending_turn_id: Option<String>,
+    /// Turn id of the current (or most recently finished) run. Stamped on
+    /// every message appended via `push_history`, including late
+    /// `abort_current_turn` tool results.
+    current_turn_id: Option<String>,
     /// Maximum output tokens requested from the provider per turn.
     max_tokens: Option<u32>,
     /// Optional cap on counted model turns within a single run.
@@ -202,6 +211,8 @@ impl AgentEngine {
             messages: Vec::new(),
             total_usage: TokenUsage::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -298,6 +309,8 @@ impl AgentEngine {
             messages: session.messages.clone(),
             total_usage: session.total_usage.clone(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -468,12 +481,37 @@ impl AgentEngine {
         self.run_inner(content_blocks, msg_id).instrument(span).await
     }
 
+    /// Set the turn id for the NEXT run. Hosts that mint their own turn ids
+    /// (e.g. AionCore) pass them in so the session-side anchor matches their
+    /// message store; without a pending id the engine mints one per run.
+    pub fn set_next_turn_id(&mut self, turn_id: Option<String>) {
+        self.pending_turn_id = turn_id;
+    }
+
+    /// Turn id of the current (or most recently finished) run.
+    pub fn current_turn_id(&self) -> Option<&str> {
+        self.current_turn_id.as_deref()
+    }
+
+    /// Append a message to the conversation history, stamped with the
+    /// current run's turn id (the session-side fork anchor).
+    fn push_history(&mut self, role: Role, content: Vec<ContentBlock>) {
+        let mut message = Message::now(role, content);
+        message.turn_id = self.current_turn_id.clone();
+        self.messages.push(message);
+    }
+
     async fn run_inner(&mut self, content_blocks: Vec<ContentBlock>, msg_id: &str) -> Result<AgentResult, AgentError> {
         self.msg_id = msg_id.to_string();
+        self.current_turn_id = Some(
+            self.pending_turn_id
+                .take()
+                .unwrap_or_else(|| Uuid::now_v7().to_string()),
+        );
         self.output.emit_stream_start(msg_id);
 
         let user_tokens = estimate_content_tokens(&content_blocks);
-        self.messages.push(Message::now(Role::User, content_blocks));
+        self.push_history(Role::User, content_blocks);
         self.record_local_context_addition(user_tokens);
         self.save_session();
 
@@ -506,13 +544,13 @@ impl AgentEngine {
             let tool_calls = match TurnOutcome::from_stream(outcome) {
                 TurnOutcome::ToolRound(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     outcome.tool_calls
                 }
                 TurnOutcome::Final(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     return Ok(AgentResult {
                         text: outcome.assistant_text,
@@ -523,7 +561,7 @@ impl AgentEngine {
                 }
                 TurnOutcome::Truncated(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     return self
                         .finalize_once(
@@ -564,7 +602,7 @@ impl AgentEngine {
                         text: EMPTY_FINAL_RETRY_PROMPT.to_string(),
                     }];
                     self.record_local_context_addition(estimate_content_tokens(&retry_blocks));
-                    self.messages.push(Message::now(Role::User, retry_blocks));
+                    self.push_history(Role::User, retry_blocks);
                     self.save_session();
                     continue;
                 }
@@ -595,9 +633,9 @@ impl AgentEngine {
             self.emit_tool_results(&tool_calls, &tool_results);
             self.record_tool_context_estimate(&tool_results, &follow_up_blocks);
 
-            self.messages.push(Message::now(Role::User, tool_results));
+            self.push_history(Role::User, tool_results);
             if !follow_up_blocks.is_empty() {
-                self.messages.push(Message::now(Role::User, follow_up_blocks));
+                self.push_history(Role::User, follow_up_blocks);
             }
 
             // Save session after each tool round.
@@ -890,7 +928,7 @@ impl AgentEngine {
 
         if is_success {
             let assistant_content = build_assistant_content(&outcome);
-            self.messages.push(Message::now(Role::Assistant, assistant_content));
+            self.push_history(Role::Assistant, assistant_content);
             self.save_session();
             return Ok(AgentResult {
                 text: combined_text,
@@ -917,12 +955,12 @@ impl AgentEngine {
             combined_text
         };
 
-        self.messages.push(Message::now(
+        self.push_history(
             Role::Assistant,
             vec![ContentBlock::Text {
                 text: fallback_text.clone(),
             }],
-        ));
+        );
         self.save_session();
         Ok(AgentResult {
             text: fallback_text,
@@ -1550,7 +1588,7 @@ impl AgentEngine {
             .collect();
 
         self.record_tool_context_estimate(&result_blocks, &[]);
-        self.messages.push(Message::now(Role::User, result_blocks));
+        self.push_history(Role::User, result_blocks);
         self.save_session();
     }
 

@@ -16,6 +16,15 @@ use crate::context_usage::ContextState;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    /// Session this one was forked from (direct parent in the fork tree).
+    /// `None` = not a fork. Lineage only — never followed at load time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
+    /// Root of the fork tree this session belongs to. `None` = this session
+    /// is itself the root. Stable across nested forks (a fork of a fork
+    /// keeps the original root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub provider: String,
@@ -43,6 +52,15 @@ pub struct SessionMeta {
     pub message_count: usize,
 }
 
+/// Where to cut the copied history when forking a session.
+#[derive(Debug, Clone, Copy)]
+pub enum ForkBoundary<'a> {
+    /// Copy the full history (fork at HEAD).
+    Head,
+    /// Copy through the LAST message stamped with this turn id (inclusive).
+    AtTurn(&'a str),
+}
+
 pub struct SessionManager {
     directory: PathBuf,
     max_sessions: usize,
@@ -65,6 +83,8 @@ impl SessionManager {
         };
         let session = Session {
             id,
+            forked_from: None,
+            root_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             provider: provider.to_string(),
@@ -109,6 +129,76 @@ impl SessionManager {
 
             Err(anyhow::anyhow!("Session '{}' not found", id_or_latest))
         })
+    }
+
+    /// Fork a session: copy its full history at HEAD into a new session id.
+    ///
+    /// The source session is never modified. The fork records lineage via
+    /// `forked_from` (direct parent) and `root_id` (fork-tree root), and both
+    /// sessions continue independently afterwards. Pass `new_id` to fork into
+    /// a caller-chosen id (fails if it already exists), or `None` to generate
+    /// one.
+    pub fn fork(&self, source_id: &str, new_id: Option<&str>) -> anyhow::Result<Session> {
+        let source = self.load(source_id)?;
+        self.fork_from(&source, new_id, ForkBoundary::Head)
+    }
+
+    /// Fork from an already-loaded session, saving the fork in this manager's
+    /// directory. For callers that resolve the source from somewhere this
+    /// manager cannot see (e.g. a legacy layout in another directory): load
+    /// the source themselves, then materialize the fork here.
+    ///
+    /// `ForkBoundary::AtTurn` truncates the copied history after the LAST
+    /// message stamped with the anchor turn id (fork THROUGH that turn,
+    /// inclusive). An anchor that matches no message — pre-turn-tracking
+    /// history, or a turn folded away by compaction — is an error: the caller
+    /// must refuse rather than silently fork at the wrong point.
+    pub fn fork_from(
+        &self,
+        source: &Session,
+        new_id: Option<&str>,
+        boundary: ForkBoundary<'_>,
+    ) -> anyhow::Result<Session> {
+        let id = match new_id {
+            Some(custom_id) => custom_id.to_string(),
+            None => self.generate_unique_id()?,
+        };
+        let now = Utc::now();
+        let mut session = source.clone();
+        if let ForkBoundary::AtTurn(anchor) = boundary {
+            let cut = session
+                .messages
+                .iter()
+                .rposition(|message| message.turn_id.as_deref() == Some(anchor))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "fork anchor turn '{}' not found in session '{}' history",
+                        anchor,
+                        source.id
+                    )
+                })?;
+            session.messages.truncate(cut + 1);
+        }
+        session.root_id = Some(source.root_id.clone().unwrap_or_else(|| source.id.clone()));
+        session.forked_from = Some(source.id.clone());
+        session.id = id;
+        session.created_at = now;
+        session.updated_at = now;
+        self.with_session_lock(&session.id, || {
+            if self.session_exists(&session.id)? {
+                anyhow::bail!("Session ID '{}' already exists", session.id);
+            }
+            self.save_unlocked(&session)
+        })?;
+        self.cleanup_old()?;
+        tracing::info!(
+            target: "aion_agent",
+            source_id = %source.id,
+            fork_id = %session.id,
+            message_count = session.messages.len(),
+            "Forked session"
+        );
+        Ok(session)
     }
 
     /// List all sessions

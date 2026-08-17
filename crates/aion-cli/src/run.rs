@@ -28,20 +28,39 @@ pub(crate) async fn run_main_flow(cli: Cli) -> anyhow::Result<()> {
 
     // Branch to JSON stream mode
     if cli.json_stream {
-        return json_stream::run(config, &cwd, cli.resume, cli.session_id).await;
+        return json_stream::run(config, &cwd, cli.resume, cli.session_id, cli.fork_session).await;
     }
 
     let provider_name = config.provider_label.clone();
     let terminal_for_resume = terminal.clone();
+    let fork_session = cli.fork_session;
 
-    let result = build_engine(config, &cwd, output.clone(), cli.resume.as_deref(), |session| {
-        terminal_for_resume.formatter().session_info(&format!(
-            "Resumed session {} ({} messages, {} model)",
-            session.id,
-            session.messages.len(),
-            session.model
-        ));
-    })
+    let result = build_engine(
+        config,
+        &cwd,
+        output.clone(),
+        cli.resume.as_deref(),
+        fork_session,
+        |session| {
+            let banner = if fork_session {
+                format!(
+                    "Forked session {} from {} ({} messages, {} model)",
+                    session.id,
+                    session.forked_from.as_deref().unwrap_or("?"),
+                    session.messages.len(),
+                    session.model
+                )
+            } else {
+                format!(
+                    "Resumed session {} ({} messages, {} model)",
+                    session.id,
+                    session.messages.len(),
+                    session.model
+                )
+            };
+            terminal_for_resume.formatter().session_info(&banner);
+        },
+    )
     .await?;
     let mut engine = result.engine;
 

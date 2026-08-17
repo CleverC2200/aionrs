@@ -50,6 +50,7 @@ subcommand runs its action and exits — it does not start the agent main flow.
 | `--auto-approve` | Skip all tool confirmations |
 | `--json-stream` | JSON Lines mode for host integration |
 | `--resume <id>` | Resume a previous session |
+| `--fork-session` | With `--resume`: fork into a new session id, leaving the original untouched |
 | `--log-dir <path>` | Enable file logging to the given directory |
 | `--log-level <filter>` | Log level filter (e.g. `debug`, `info`, `aion_providers=debug`) |
 
@@ -307,11 +308,17 @@ aionrs --resume latest
 # Resume a specific session
 aionrs --resume a1b2c3
 
+# Fork a session: copy its history into a new session id and continue
+# there, leaving the original session untouched
+aionrs --resume a1b2c3 --fork-session
+
 # Create a session with a custom ID
 aionrs --session-id my-conv-123
 ```
 
 - `--session-id` and `--resume` are mutually exclusive
+- `--fork-session` requires `--resume`; the forked session records its
+  parent in `forked_from` and the fork-tree root in `root_id`
 - `--session-id` errors if the ID already exists
 - Both flags work in interactive and `--json-stream` mode
 - Auto-saves after each tool round

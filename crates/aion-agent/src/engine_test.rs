@@ -56,6 +56,8 @@ mod tests_set_config {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -433,6 +435,8 @@ mod tests_phase6 {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -719,6 +723,8 @@ mod tests_compact {
             messages,
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -940,6 +946,8 @@ mod tests_compact {
         context_state.microcompact_count = 5;
         let session = Session {
             id: "resume-context".into(),
+            forked_from: None,
+            root_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             provider: "anthropic".into(),
@@ -1034,6 +1042,56 @@ mod tests_compact {
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.context_state.context_usage, 120);
         assert_eq!(loaded.context_state.source, ContextUsageSource::ProviderExact);
+    }
+
+    #[tokio::test]
+    async fn run_stamps_one_turn_id_per_run_and_honors_host_supplied_id() {
+        let directory = tempdir().unwrap();
+        let mut config = test_config();
+        config.session.enabled = true;
+        config.session.directory = directory.path().display().to_string();
+        let provider: Arc<dyn LlmProvider> = Arc::new(SuccessfulProvider {
+            usage: TokenUsage::default(),
+        });
+        let mut engine = super::AgentEngine::new_with_provider(
+            provider,
+            config,
+            ToolRegistry::new(),
+            Arc::new(NullOutput),
+            directory.path().to_path_buf(),
+        );
+        engine
+            .init_session(
+                "anthropic",
+                &directory.path().display().to_string(),
+                Some("turn-stamps"),
+            )
+            .unwrap();
+
+        // Turn 1: engine mints its own id; user + assistant share it.
+        engine.run("first", "msg-1").await.unwrap();
+        let first_turn = engine.current_turn_id().expect("minted").to_owned();
+
+        // Turn 2: host-supplied id wins and is consumed exactly once.
+        engine.set_next_turn_id(Some("turn_host123".into()));
+        engine.run("second", "msg-2").await.unwrap();
+        assert_eq!(engine.current_turn_id(), Some("turn_host123"));
+
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        let loaded = manager.load("turn-stamps").unwrap();
+        assert_eq!(loaded.messages.len(), 4);
+        let turn_ids: Vec<_> = loaded.messages.iter().map(|m| m.turn_id.as_deref()).collect();
+        assert_eq!(
+            turn_ids,
+            vec![
+                Some(first_turn.as_str()),
+                Some(first_turn.as_str()),
+                Some("turn_host123"),
+                Some("turn_host123"),
+            ],
+            "every message of a run carries that run's turn id"
+        );
+        assert_ne!(first_turn, "turn_host123");
     }
 
     #[test]
@@ -1422,6 +1480,8 @@ mod tests_plan_mode {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -1643,6 +1703,8 @@ mod tests_handle_command {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -2671,6 +2733,8 @@ mod tests_tool_policy_enforcement {
             messages: Vec::new(),
             total_usage: Default::default(),
             msg_id: "test-message".to_string(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_tokens: Some(4096),
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
