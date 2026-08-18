@@ -70,6 +70,28 @@ mod tests {
         assert!(result.contains(&format!("original {} bytes", content.len())));
     }
 
+    #[test]
+    fn truncate_result_replaces_oversized_json_with_valid_structured_error() {
+        let content = json!({ "rows": (0..500).collect::<Vec<_>>() }).to_string();
+        let result = truncate_result(&content, 512);
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("oversized JSON must remain valid JSON");
+
+        assert!(result.len() <= 512);
+        assert_eq!(parsed["status"], "result_too_large");
+        assert_eq!(parsed["error"]["code"], "MCP_RESULT_TOO_LARGE");
+        assert_eq!(parsed["error"]["originalBytes"], content.len());
+        assert_eq!(parsed["error"]["maxBytes"], 512);
+    }
+
+    #[test]
+    fn truncate_result_keeps_valid_json_for_tiny_positive_limit() {
+        let content = json!({ "rows": (0..500).collect::<Vec<_>>() }).to_string();
+        let result = truncate_result(&content, 4);
+
+        assert!(result.len() <= 4);
+        serde_json::from_str::<serde_json::Value>(&result).expect("fallback must remain valid JSON");
+    }
+
     // -- maybe_append_deferred_hint -------------------------------------------
 
     #[test]
