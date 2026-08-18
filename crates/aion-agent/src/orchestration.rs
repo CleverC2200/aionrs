@@ -9,7 +9,9 @@ use aion_types::message::ContentBlock;
 use aion_types::skill_types::ContextModifier;
 use aion_types::tool::ToolResult;
 
-use aion_tools::registry::ToolRegistry;
+use aion_tools::{registry::ToolRegistry, truncate_utf8};
+
+const MCP_MODEL_TOOL_RESULT_MAX_BYTES: usize = 10_000;
 
 /// The combined output of a tool execution batch: protocol content blocks
 /// paired with per-call context modifiers (None for non-skill tools).
@@ -190,13 +192,29 @@ async fn execute_single(
             } else {
                 r.content.clone()
             };
-            let content = truncate_result(&error_content, max_size);
-            let content = aion_compact::compact_output(&content, compaction_level);
+            let content = aion_compact::compact_output(&error_content, compaction_level);
             let content = if toon_enabled {
                 aion_compact::compact_output_toon(&content)
             } else {
                 content
             };
+            let original_bytes = content.len();
+            let output_limit = if tool.category() == aion_protocol::events::ToolCategory::Mcp {
+                max_size.min(MCP_MODEL_TOOL_RESULT_MAX_BYTES)
+            } else {
+                max_size
+            };
+            let content = truncate_result(&content, output_limit);
+            if content.len() < original_bytes {
+                tracing::debug!(
+                    target: "aion_agent",
+                    tool = %name,
+                    original_bytes,
+                    output_bytes = content.len(),
+                    output_limit,
+                    "tool result truncated for model context"
+                );
+            }
             (
                 ToolResult {
                     content,
@@ -413,26 +431,33 @@ fn maybe_append_deferred_hint(original_error: &str, schema: serde_json::Value, i
     )
 }
 
-fn truncate_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
+fn truncate_result(content: &str, max_bytes: usize) -> String {
+    if content.len() <= max_bytes {
         return content.to_string();
     }
-    let half = max_chars / 2;
-    // Find char boundaries to avoid panicking on multi-byte characters
-    let head_end = content
-        .char_indices()
-        .nth(half)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let tail_start = content.char_indices().rev().nth(half - 1).map(|(i, _)| i).unwrap_or(0);
+
+    let marker = format!("\n\n... [truncated output: original {} bytes] ...\n\n", content.len());
+    if marker.len() >= max_bytes {
+        return truncate_utf8(&marker, max_bytes).to_string();
+    }
+
+    let content_budget = max_bytes - marker.len();
+    let head_budget = content_budget.div_ceil(2);
+    let tail_budget = content_budget / 2;
+
+    let mut head_end = head_budget;
+    while head_end > 0 && !content.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+
+    let mut tail_start = content.len() - tail_budget;
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+
     let head = &content[..head_end];
     let tail = &content[tail_start..];
-    format!(
-        "{}\n\n... [truncated {} chars] ...\n\n{}",
-        head,
-        content.len() - max_chars,
-        tail
-    )
+    format!("{head}{marker}{tail}")
 }
 
 fn truncate_display(s: &str, max: usize) -> String {

@@ -47,6 +47,8 @@ mod tests {
         let cjk: String = "这是一段较长的中文内容用于测试截断功能".repeat(50);
         let result = truncate_result(&cjk, 100);
         assert!(result.contains("truncated"));
+        assert!(result.len() <= 100);
+        assert!(result.is_char_boundary(result.len()));
     }
 
     #[test]
@@ -54,6 +56,18 @@ mod tests {
         let mixed = "Hello你好World世界Test测试".repeat(100);
         let result = truncate_result(&mixed, 200);
         assert!(result.contains("truncated"));
+        assert!(result.len() <= 200);
+    }
+
+    #[test]
+    fn truncate_result_preserves_head_and_tail_with_strict_byte_limit() {
+        let content = format!("HEAD{}TAIL", "middle".repeat(100));
+        let result = truncate_result(&content, 100);
+
+        assert!(result.starts_with("HEAD"));
+        assert!(result.ends_with("TAIL"));
+        assert!(result.len() <= 100);
+        assert!(result.contains(&format!("original {} bytes", content.len())));
     }
 
     // -- maybe_append_deferred_hint -------------------------------------------
@@ -202,6 +216,33 @@ mod tests {
         }
     }
 
+    struct MockLargeResultTool;
+
+    #[async_trait::async_trait]
+    impl Tool for MockLargeResultTool {
+        fn name(&self) -> &str {
+            "MockLargeResult"
+        }
+        fn description(&self) -> &str {
+            "A mock tool with a large result"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "properties": {}})
+        }
+        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+            true
+        }
+        async fn execute(&self, _input: serde_json::Value) -> aion_types::tool::ToolResult {
+            aion_types::tool::ToolResult {
+                content: "x".repeat(MCP_MODEL_TOOL_RESULT_MAX_BYTES * 2),
+                is_error: false,
+            }
+        }
+        fn category(&self) -> aion_protocol::events::ToolCategory {
+            aion_protocol::events::ToolCategory::Mcp
+        }
+    }
+
     fn make_registry_with_deferred() -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(MockDeferredTool {
@@ -212,6 +253,7 @@ mod tests {
             }),
         }));
         registry.register(Box::new(MockNonDeferredTool));
+        registry.register(Box::new(MockLargeResultTool));
         registry
     }
 
@@ -297,5 +339,25 @@ mod tests {
         } else {
             panic!("expected ToolResult");
         }
+    }
+
+    #[tokio::test]
+    async fn execute_single_caps_model_facing_tool_result() {
+        let registry = make_registry_with_deferred();
+        let call = ContentBlock::ToolUse {
+            id: "call_large".into(),
+            name: "MockLargeResult".into(),
+            input: json!({}),
+            extra: None,
+        };
+
+        let (result, _, _) = execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+
+        let ContentBlock::ToolResult { content, is_error, .. } = result else {
+            panic!("expected ToolResult");
+        };
+        assert!(!is_error);
+        assert!(content.len() <= MCP_MODEL_TOOL_RESULT_MAX_BYTES);
+        assert!(content.contains("truncated output"));
     }
 }

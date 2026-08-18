@@ -262,7 +262,7 @@ async fn test_post_hook_runs_after_tool() {
     }
 }
 
-/// Results that exceed max_result_size are truncated with a "[truncated N chars]" marker
+/// Results that exceed max_result_size are truncated with a marker.
 #[tokio::test]
 async fn test_tool_result_truncation() {
     // Default max_result_size is 50_000; build a result that exceeds it
@@ -285,6 +285,10 @@ async fn test_tool_result_truncation() {
             assert!(
                 content.len() < long_result.len(),
                 "truncated result should be shorter than the original"
+            );
+            assert!(
+                content.len() > 10_000,
+                "non-MCP tools should keep their tool-specific result budget"
             );
             assert!(
                 content.contains("truncated"),

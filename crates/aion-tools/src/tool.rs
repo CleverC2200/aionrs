@@ -87,7 +87,7 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Max result size in chars before truncation
+    /// Max result size in UTF-8 bytes before truncation.
     fn max_result_size(&self) -> usize {
         50_000
     }

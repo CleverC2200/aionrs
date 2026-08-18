@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aion_config::compat::AssistantToolCallContent;
     use aion_types::message::{ContentBlock, ImageUrl, Message, Role};
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
@@ -706,6 +707,109 @@ mod tests {
         let tool_msgs: Vec<_> = result.iter().filter(|m| m["role"] == "tool").collect();
         assert_eq!(tool_msgs.len(), 1);
         assert_eq!(tool_msgs[0]["content"], "second");
+    }
+
+    #[test]
+    fn tool_only_assistant_emits_empty_content_when_compat_requires_it() {
+        let mut compat = openai_compat();
+        compat.messages.assistant_tool_call_content = Some(AssistantToolCallContent::EmptyString);
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "query_business_data".into(),
+                    input: json!({"action": "query"}),
+                    extra: None,
+                }],
+            ),
+            Message::new(
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let result = build_messages(&messages, "", &compat);
+        let assistant = result.iter().find(|message| message["role"] == "assistant").unwrap();
+
+        assert_eq!(assistant["content"], "");
+        assert_eq!(assistant["tool_calls"][0]["id"], "call_1");
+        assert_eq!(result[1]["role"], "tool");
+        assert_eq!(result[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn tool_only_assistant_omits_content_by_default() {
+        let messages = vec![
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "query_business_data".into(),
+                    input: json!({"action": "query"}),
+                    extra: None,
+                }],
+            ),
+            Message::new(
+                Role::Tool,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            ),
+        ];
+
+        let result = build_messages(&messages, "", &openai_compat());
+        let assistant = result.iter().find(|message| message["role"] == "assistant").unwrap();
+
+        assert!(assistant.get("content").is_none());
+    }
+
+    #[test]
+    fn strict_tool_history_preserves_all_parallel_call_pairs() {
+        let mut compat = openai_compat();
+        compat.messages.assistant_tool_call_content = Some(AssistantToolCallContent::EmptyString);
+        let tool_uses = (0..8)
+            .map(|index| ContentBlock::ToolUse {
+                id: format!("call_{index}"),
+                name: "query_business_data".into(),
+                input: json!({"page": index}),
+                extra: None,
+            })
+            .collect();
+        let tool_results = (0..8)
+            .map(|index| ContentBlock::ToolResult {
+                tool_use_id: format!("call_{index}"),
+                content: format!("page {index}"),
+                is_error: false,
+            })
+            .collect();
+        let messages = vec![
+            Message::new(Role::Assistant, tool_uses),
+            Message::new(Role::Tool, tool_results),
+        ];
+
+        let result = build_messages(&messages, "", &compat);
+        let assistant = &result[0];
+        let call_ids: Vec<_> = assistant["tool_calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|call| call["id"].as_str().unwrap())
+            .collect();
+        let result_ids: Vec<_> = result[1..]
+            .iter()
+            .map(|message| message["tool_call_id"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(assistant["content"], "");
+        assert_eq!(call_ids, result_ids);
+        assert_eq!(result_ids.len(), 8);
     }
 
     #[test]
