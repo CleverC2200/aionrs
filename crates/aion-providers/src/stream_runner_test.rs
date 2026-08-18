@@ -63,6 +63,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_stream_retries_failed_empty_api_500_then_emits_success() {
+        tokio::time::pause();
+
+        let send_count = Arc::new(AtomicU32::new(0));
+        let process_count = Arc::new(AtomicU32::new(0));
+
+        let mut rx = run_stream(
+            {
+                let send_count = Arc::clone(&send_count);
+                move || {
+                    let send_count = Arc::clone(&send_count);
+                    async move {
+                        let attempt = send_count.fetch_add(1, Ordering::SeqCst);
+                        Ok::<_, ProviderError>(attempt)
+                    }
+                }
+            },
+            {
+                let process_count = Arc::clone(&process_count);
+                move |attempt, tx| {
+                    let process_count = Arc::clone(&process_count);
+                    async move {
+                        process_count.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            StreamOutcome::FailedEmpty(ProviderError::Api {
+                                status: 500,
+                                message: "upstream connection failed".into(),
+                            })
+                        } else {
+                            tx.send(LlmEvent::TextDelta("ok".into())).await.unwrap();
+                            StreamOutcome::Ok
+                        }
+                    }
+                }
+            },
+            RetryPolicy::new(2, false, true, true),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "ok"
+        ));
+        assert!(rx.recv().await.is_none());
+        assert_eq!(send_count.load(Ordering::SeqCst), 2);
+        assert_eq!(process_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn test_run_stream_retries_http_error_during_resend() {
         tokio::time::pause();
 

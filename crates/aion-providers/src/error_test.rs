@@ -23,6 +23,17 @@ mod retryable_tests {
         );
         assert!(ProviderError::Connection("x".into()).is_retryable());
     }
+
+    #[test]
+    fn test_api_500_not_generically_retryable() {
+        assert!(
+            !ProviderError::Api {
+                status: 500,
+                message: "upstream connection failed".into(),
+            }
+            .is_retryable()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +84,20 @@ mod json_error_body_tests {
         assert!(matches!(
             error,
             ProviderError::Parse(message) if message.contains("without an HTTP status")
+        ));
+    }
+
+    #[test]
+    fn stringified_json_error_preserves_nested_http_status() {
+        let body_text =
+            r#"{"error":"{\"error\":{\"message\":\"litellm upstream connection failed\",\"code\":\"500\"}}"}"#;
+        let body = serde_json::from_str(body_text).expect("test body should be valid JSON");
+        let error = provider_error_from_json_body(&body, body_text.as_bytes())
+            .expect("nested status 500 should map to an error");
+
+        assert!(matches!(
+            error,
+            ProviderError::Api { status: 500, message } if message == "litellm upstream connection failed"
         ));
     }
 

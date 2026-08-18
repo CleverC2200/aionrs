@@ -80,7 +80,10 @@ where
                 let _ = tx.send(LlmEvent::Error(err.to_string())).await;
             }
             StreamOutcome::FailedEmpty(err) => {
-                if !err.is_retryable() || !policy.can_resign || policy.max_stream_retries == 0 {
+                if !is_retryable_empty_stream_error(&err, policy.initial_http_5xx)
+                    || !policy.can_resign
+                    || policy.max_stream_retries == 0
+                {
                     let _ = tx.send(LlmEvent::Error(err.to_string())).await;
                     return;
                 }
@@ -116,7 +119,7 @@ where
                                 }
                                 StreamOutcome::FailedEmpty(err) => {
                                     final_err = err;
-                                    if !final_err.is_retryable()
+                                    if !is_retryable_empty_stream_error(&final_err, policy.initial_http_5xx)
                                         || !policy.can_resign
                                         || attempt == policy.max_stream_retries
                                     {
@@ -143,6 +146,10 @@ where
     tokio::spawn(stream_task.instrument(stream_span));
 
     Ok(rx)
+}
+
+fn is_retryable_empty_stream_error(error: &ProviderError, allow_http_5xx: bool) -> bool {
+    error.is_retryable() || (allow_http_5xx && matches!(error, ProviderError::Api { status: 500..=599, .. }))
 }
 
 fn is_retryable_resend_error(error: &ProviderError) -> bool {

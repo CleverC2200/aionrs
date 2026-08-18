@@ -36,10 +36,23 @@ pub(crate) fn provider_error_from_json_body(body: &Value, body_bytes: &[u8]) -> 
     // Some gateways include `"error": null` in perfectly normal responses;
     // treat a null error field the same as an absent one.
     let error_field = body.get("error").filter(|error| !error.is_null());
-    let error = error_field.unwrap_or(body);
+    // LiteLLM-compatible gateways may serialize the actual provider error as
+    // JSON inside the outer `error` string. Decode one layer so an embedded
+    // HTTP status such as `code: "500"` keeps its retry semantics.
+    let decoded_error = error_field
+        .and_then(Value::as_str)
+        .and_then(|error| serde_json::from_str::<Value>(error).ok());
+    let error = decoded_error
+        .as_ref()
+        .and_then(|decoded| decoded.get("error").filter(|error| !error.is_null()))
+        .or(decoded_error.as_ref())
+        .or(error_field)
+        .unwrap_or(body);
     let status = [
         error.get("code"),
         error.get("status"),
+        decoded_error.as_ref().and_then(|error| error.get("code")),
+        decoded_error.as_ref().and_then(|error| error.get("status")),
         body.get("code"),
         body.get("status"),
     ]
