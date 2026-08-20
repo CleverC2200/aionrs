@@ -436,6 +436,10 @@ fn truncate_result(content: &str, max_bytes: usize) -> String {
         return content.to_string();
     }
 
+    if serde_json::from_str::<serde_json::Value>(content).is_ok() {
+        return oversized_json_result(content.len(), max_bytes);
+    }
+
     let marker = format!("\n\n... [truncated output: original {} bytes] ...\n\n", content.len());
     if marker.len() >= max_bytes {
         return truncate_utf8(&marker, max_bytes).to_string();
@@ -458,6 +462,28 @@ fn truncate_result(content: &str, max_bytes: usize) -> String {
     let head = &content[..head_end];
     let tail = &content[tail_start..];
     format!("{head}{marker}{tail}")
+}
+
+fn oversized_json_result(original_bytes: usize, max_bytes: usize) -> String {
+    let envelope = serde_json::json!({
+        "status": "result_too_large",
+        "error": {
+            "code": "MCP_RESULT_TOO_LARGE",
+            "message": "The MCP result exceeded the model-facing size limit. Request a bounded or aggregated result.",
+            "originalBytes": original_bytes,
+            "maxBytes": max_bytes
+        }
+    })
+    .to_string();
+    if envelope.len() <= max_bytes {
+        envelope
+    } else if max_bytes >= 4 {
+        "null".to_owned()
+    } else if max_bytes >= 1 {
+        "0".to_owned()
+    } else {
+        String::new()
+    }
 }
 
 fn truncate_display(s: &str, max: usize) -> String {
