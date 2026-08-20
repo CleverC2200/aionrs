@@ -25,6 +25,7 @@ ensure_alternation = true
 merge_same_role = true
 sanitize_schema = true
 strip_patterns = ["__REASONING__"]
+assistant_tool_call_content = "empty_string"
 auto_tool_id = true
 supports_thinking = true
 supports_effort = false
@@ -59,6 +60,10 @@ max_tokens = 64000
         assert_eq!(compat.messages.ensure_alternation, Some(true));
         assert_eq!(compat.messages.merge_same_role, Some(true));
         assert_eq!(compat.messages.strip_patterns, Some(vec!["__REASONING__".to_string()]));
+        assert_eq!(
+            compat.assistant_tool_call_content(),
+            AssistantToolCallContent::EmptyString
+        );
         assert_eq!(compat.tools.clean_orphan_tool_calls, Some(true));
         assert_eq!(compat.tools.sanitize_malformed_tool_calls, Some(false));
         assert_eq!(compat.tools.auto_tool_id, Some(true));
@@ -97,6 +102,7 @@ max_tokens = 64000
                 ensure_alternation: Some(true),
                 merge_same_role: Some(true),
                 strip_patterns: Some(vec!["__REASONING__".to_string()]),
+                assistant_tool_call_content: Some(AssistantToolCallContent::EmptyString),
             },
             tools: ToolCompat {
                 clean_orphan_tool_calls: Some(true),
@@ -139,6 +145,7 @@ max_tokens = 64000
         assert!(toml.contains("merge_same_role = true"));
         assert!(toml.contains("sanitize_schema = true"));
         assert!(toml.contains("strip_patterns = [\"__REASONING__\"]"));
+        assert!(toml.contains("assistant_tool_call_content = \"empty_string\""));
         assert!(toml.contains("auto_tool_id = true"));
         assert!(toml.contains("supports_thinking = true"));
         assert!(toml.contains("supports_effort = false"));
@@ -169,6 +176,7 @@ max_tokens = 64000
                 ensure_alternation: None,
                 merge_same_role: None,
                 strip_patterns: Some(vec!["strip-me".to_string()]),
+                assistant_tool_call_content: Some(AssistantToolCallContent::EmptyString),
             },
             tools: ToolCompat {
                 clean_orphan_tool_calls: Some(false),
@@ -203,6 +211,10 @@ max_tokens = 64000
         assert!(!merged.clean_orphan_tool_calls());
         assert!(!merged.clean_orphan_tool_results());
         assert!(merged.dedup_tool_results());
+        assert_eq!(
+            merged.assistant_tool_call_content(),
+            AssistantToolCallContent::EmptyString
+        );
         assert!(!merged.sanitize_malformed_tool_calls());
         assert_eq!(merged.max_tool_count(), Some(42));
         assert!(merged.emit_tools());

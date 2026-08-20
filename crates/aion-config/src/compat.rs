@@ -90,6 +90,20 @@ pub struct MessageCompat {
     /// Text patterns to strip from message history before sending.
     /// Default: empty.
     pub strip_patterns: Option<Vec<String>>,
+
+    /// Content emitted for assistant messages that contain tool calls but no
+    /// text. Strict gateways may require an explicit empty string, while other
+    /// providers expect the field to be omitted.
+    /// Default: omit.
+    pub assistant_tool_call_content: Option<AssistantToolCallContent>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolCallContent {
+    #[default]
+    Omit,
+    EmptyString,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -182,6 +196,9 @@ impl MessageCompat {
             ensure_alternation: user.ensure_alternation.or(defaults.ensure_alternation),
             merge_same_role: user.merge_same_role.or(defaults.merge_same_role),
             strip_patterns: user.strip_patterns.or(defaults.strip_patterns),
+            assistant_tool_call_content: user
+                .assistant_tool_call_content
+                .or(defaults.assistant_tool_call_content),
         }
     }
 }
@@ -426,6 +443,10 @@ impl ProviderCompat {
 
     pub fn merge_same_role(&self) -> bool {
         self.messages.merge_same_role.unwrap_or(false)
+    }
+
+    pub fn assistant_tool_call_content(&self) -> AssistantToolCallContent {
+        self.messages.assistant_tool_call_content.unwrap_or_default()
     }
 
     pub fn sanitize_schema(&self) -> bool {

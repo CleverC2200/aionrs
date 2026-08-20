@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use aion_config::compat::ProviderCompat;
+use aion_config::compat::{AssistantToolCallContent, ProviderCompat};
 use aion_types::message::{ContentBlock, Message, Role};
 use serde_json::{Value, json};
 
@@ -236,7 +236,9 @@ pub(crate) fn build_messages(messages: &[Message], system: &str, compat: &Provid
 
                 if !combined.is_empty() {
                     msg_json["content"] = json!(combined);
-                } else if tool_calls.is_empty() {
+                } else if tool_calls.is_empty()
+                    || compat.assistant_tool_call_content() == AssistantToolCallContent::EmptyString
+                {
                     msg_json["content"] = json!("");
                 }
 
