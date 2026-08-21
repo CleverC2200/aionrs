@@ -8,7 +8,7 @@
 use aion_config::compact::CompactConfig;
 use aion_providers::{LlmProvider, ProviderError};
 use aion_types::compact::{CompactMetadata, CompactTrigger};
-use aion_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
+use aion_types::llm::{LlmEvent, LlmRequest};
 use aion_types::message::{ContentBlock, Message, Role, TokenUsage};
 use tokio::sync::mpsc;
 
@@ -116,7 +116,7 @@ pub async fn autocompact(
             tools: vec![],
             tool_choice: Default::default(),
             max_tokens: Some(COMPACT_MAX_OUTPUT_TOKENS),
-            thinking: Some(ThinkingConfig::Disabled),
+            thinking: None,
             reasoning_effort: None,
         };
 
