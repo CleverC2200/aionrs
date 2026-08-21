@@ -26,6 +26,7 @@ mod tests {
         assert_eq!(session.cwd, "/tmp");
         assert!(session.messages.is_empty());
         assert!(manager.state_path(&session.id).is_file());
+        assert!(!manager.nested_state_path(&session.id).exists());
         assert!(!dir.path().join("index.json").exists());
 
         let state_json: serde_json::Value =
@@ -150,6 +151,25 @@ mod tests {
     }
 
     #[test]
+    fn test_load_nested_current_layout_migrates_to_flat_layout() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = sample_session("nested-session", "nested model");
+        let nested_path = manager.nested_state_path(&session.id);
+        fs::create_dir_all(nested_path.parent().unwrap()).unwrap();
+        fs::write(&nested_path, serde_json::to_string_pretty(&session).unwrap()).unwrap();
+
+        let listed = manager.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, session.id);
+
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.model, "nested model");
+        assert!(manager.state_path(&session.id).is_file());
+        assert!(nested_path.is_file());
+    }
+
+    #[test]
     fn test_list_merges_legacy_and_current_sessions() {
         let dir = tempdir().unwrap();
         let manager = SessionManager::new(dir.path().to_path_buf(), 10);
@@ -264,6 +284,23 @@ mod tests {
         let list = manager.list().unwrap();
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|meta| meta.id == "legacy-session"));
+    }
+
+    #[test]
+    fn test_cleanup_removes_old_nested_current_layout() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 1);
+        let old = sample_session("old-nested-session", "old model");
+        let old_path = manager.nested_state_path(&old.id);
+        fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        fs::write(&old_path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+
+        manager
+            .create("openai", "new model", "/tmp", Some("new-session"))
+            .unwrap();
+
+        assert!(!old_path.exists());
+        assert!(manager.state_path("new-session").is_file());
     }
 
     #[test]

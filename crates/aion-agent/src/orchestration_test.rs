@@ -92,6 +92,11 @@ mod tests {
         serde_json::from_str::<serde_json::Value>(&result).expect("fallback must remain valid JSON");
     }
 
+    #[test]
+    fn truncate_result_zero_budget_returns_empty_output() {
+        assert_eq!(truncate_result("content", 0), "");
+    }
+
     // -- maybe_append_deferred_hint -------------------------------------------
 
     #[test]
@@ -289,7 +294,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);
@@ -311,7 +316,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             // Tool succeeds because input.get("tasks") is Some
@@ -332,7 +337,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(!is_error);
@@ -352,7 +357,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);
@@ -373,7 +378,15 @@ mod tests {
             extra: None,
         };
 
-        let (result, _, _) = execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+        let (result, _, _) = execute_single(
+            &registry,
+            &call,
+            None,
+            aion_compact::CompactLevel::Off,
+            false,
+            MCP_MODEL_TOOL_RESULT_MAX_BYTES * 4,
+        )
+        .await;
 
         let ContentBlock::ToolResult { content, is_error, .. } = result else {
             panic!("expected ToolResult");

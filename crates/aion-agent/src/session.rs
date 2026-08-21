@@ -226,12 +226,15 @@ impl SessionManager {
     }
 
     fn load_current(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
-        let path = self.state_path(session_id);
-        match fs::read_to_string(path) {
-            Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+        if let Some(session) = load_session_file(&self.state_path(session_id))? {
+            return Ok(Some(session));
         }
+
+        let Some(session) = load_session_file(&self.nested_state_path(session_id))? else {
+            return Ok(None);
+        };
+        self.save_unlocked(&session)?;
+        Ok(Some(session))
     }
 
     fn save_unlocked(&self, session: &Session) -> anyhow::Result<()> {
@@ -242,8 +245,18 @@ impl SessionManager {
     }
 
     fn list_current(&self) -> anyhow::Result<Vec<SessionMeta>> {
-        let sessions_dir = self.sessions_dir();
-        let entries = match fs::read_dir(&sessions_dir) {
+        let mut sessions = HashMap::new();
+        for meta in self.list_current_in(&self.nested_sessions_dir())? {
+            sessions.insert(meta.id.clone(), meta);
+        }
+        for meta in self.list_current_in(&self.directory)? {
+            sessions.insert(meta.id.clone(), meta);
+        }
+        Ok(sessions.into_values().collect())
+    }
+
+    fn list_current_in(&self, directory: &Path) -> anyhow::Result<Vec<SessionMeta>> {
+        let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
@@ -358,7 +371,7 @@ impl SessionManager {
     }
 
     fn session_exists(&self, session_id: &str) -> anyhow::Result<bool> {
-        if self.state_path(session_id).is_file() {
+        if self.state_path(session_id).is_file() || self.nested_state_path(session_id).is_file() {
             return Ok(true);
         }
         Ok(self.find_legacy_session_file(session_id)?.is_some())
@@ -374,16 +387,24 @@ impl SessionManager {
         anyhow::bail!("failed to generate unique session id")
     }
 
-    fn sessions_dir(&self) -> PathBuf {
+    fn nested_sessions_dir(&self) -> PathBuf {
         self.directory.join("sessions")
     }
 
     fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(encode_session_id(session_id))
+        self.directory.join(encode_session_id(session_id))
+    }
+
+    fn nested_session_dir(&self, session_id: &str) -> PathBuf {
+        self.nested_sessions_dir().join(encode_session_id(session_id))
     }
 
     fn state_path(&self, session_id: &str) -> PathBuf {
         self.session_dir(session_id).join("state.json")
+    }
+
+    fn nested_state_path(&self, session_id: &str) -> PathBuf {
+        self.nested_session_dir(session_id).join("state.json")
     }
 
     fn with_session_lock<T>(&self, session_id: &str, f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
@@ -408,14 +429,20 @@ impl SessionManager {
             let _guard = lock
                 .lock()
                 .map_err(|_| anyhow::anyhow!("session lock poisoned for '{}'", meta.id))?;
-            match fs::remove_dir_all(self.session_dir(&meta.id)) {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            self.remove_session_layouts(&meta.id)?;
         }
 
         Ok(())
+    }
+
+    fn remove_session_layouts(&self, session_id: &str) -> anyhow::Result<()> {
+        let session_dir = self.session_dir(session_id);
+        if session_dir == self.nested_sessions_dir() {
+            remove_file_if_exists(&self.state_path(session_id))?;
+        } else {
+            remove_dir_if_exists(&session_dir)?;
+        }
+        remove_dir_if_exists(&self.nested_session_dir(session_id))
     }
 }
 
@@ -478,6 +505,30 @@ fn read_session_file_if_valid(path: &Path) -> anyhow::Result<Option<Session>> {
             );
             Ok(None)
         }
+    }
+}
+
+fn load_session_file(path: &Path) -> anyhow::Result<Option<Session>> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_dir_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 

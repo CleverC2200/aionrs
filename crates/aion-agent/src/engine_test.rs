@@ -17,10 +17,12 @@ mod tests_set_config {
     use aion_tools::registry::ToolRegistry;
     use aion_types::llm::{LlmEvent, LlmRequest};
     use aion_types::message::ImageInputCapability;
+    use tempfile::tempdir;
 
     use super::{CompactLevel, ProviderCompat};
     use crate::confirm::ToolConfirmer;
     use crate::output::OutputSink;
+    use crate::session::SessionManager;
 
     struct NullOutput;
     impl OutputSink for NullOutput {
@@ -100,6 +102,23 @@ mod tests_set_config {
         assert_eq!(changes.len(), 1);
         assert!(changes[0].contains("old-model"));
         assert!(changes[0].contains("new-model"));
+    }
+
+    #[test]
+    fn set_config_model_change_persists_session_metadata_immediately() {
+        let directory = tempdir().unwrap();
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        let session = manager
+            .create("openai", "old-model", "/workspace", Some("model-switch"))
+            .unwrap();
+        let mut engine = make_engine("old-model");
+        engine.session_manager = Some(manager);
+        engine.current_session = Some(session);
+
+        engine.apply_config_update(Some("new-model".into()), None, None, None, None, None);
+
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        assert_eq!(manager.load("model-switch").unwrap().model, "new-model");
     }
 
     #[test]
@@ -1172,6 +1191,36 @@ mod tests_compact {
     // -- Microcompact runs when count trigger fires --
 
     #[tokio::test]
+    async fn microcompact_is_disabled_by_default() {
+        let mut messages = Vec::new();
+        for i in 0..12 {
+            let id = format!("t{i}");
+            messages.push(tool_use_msg(&id, "Read"));
+            messages.push(tool_result_msg(&id, &format!("data-{i}")));
+        }
+
+        let config = CompactConfig {
+            micro_keep_recent: 3,
+            ..Default::default()
+        };
+        let state = CompactState::new();
+        let mut engine = make_compact_engine(config, state, messages);
+
+        engine.run_compaction().await.unwrap();
+
+        let cleared_count = engine
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(
+                |block| matches!(block, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]"),
+            )
+            .count();
+        assert_eq!(cleared_count, 0);
+        assert_eq!(engine.context_state.microcompact_count, 0);
+    }
+
+    #[tokio::test]
     async fn microcompact_clears_old_results() {
         // 12 tool results with keep_recent=3 (threshold=6) → should clear 9
         let mut messages = Vec::new();
@@ -1182,6 +1231,7 @@ mod tests_compact {
         }
 
         let config = CompactConfig {
+            microcompact_enabled: true,
             micro_keep_recent: 3,
             ..Default::default()
         };
@@ -1220,6 +1270,7 @@ mod tests_compact {
             context_window: 200_000,
             emergency_buffer: 3_000,
             max_failures: 3,
+            microcompact_enabled: true,
             micro_keep_recent: 1,
             ..Default::default()
         };
@@ -1304,6 +1355,7 @@ mod tests_compact {
 
         let config = CompactConfig {
             enabled: false,
+            microcompact_enabled: true,
             micro_keep_recent: 3,
             ..Default::default()
         };
