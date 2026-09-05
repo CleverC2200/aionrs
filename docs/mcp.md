@@ -83,6 +83,25 @@ Use `deferred = true` for MCP servers with many tools to keep the initial system
 - MCP tool names are used directly when there's no conflict
 - On conflict with built-in or other MCP tools, names are auto-prefixed: `mcp__{server}__{tool}`
 
+## Tool Resource Links
+
+Tool results containing `resource_link` are resolved with `resources/read` on
+the same MCP server and session. Small resource text is included inline.
+Resources larger than 4,000 bytes instead return a `ReadMcpResource` call hint,
+so they do not overflow the model's tool-output budget. This read-only tool
+accepts `server`, `uri`, a JSON `pointer` (empty for the root), and `offset`.
+Large JSON containers return a paginated index of child pointers and names;
+follow a child pointer to read its value, or `next_offset` to continue the index.
+Large strings and non-JSON text use character-offset pages. Index pages are
+explicitly incomplete, never partial JSON presented as complete data.
+
+Only resources returned by tools in the current manager session can be read
+through this tool; each read still goes through the originating server's
+authorization and validation. Nothing is persisted locally. The URI is never
+fetched directly over HTTP or read from the filesystem. A resource read failure remains a tool
+error instead of returning an incomplete result as success. Binary-only
+resources are not supported by this text-output path.
+
 ## Startup Flow
 
 1. Connect to all configured MCP servers

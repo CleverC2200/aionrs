@@ -8,8 +8,10 @@ use super::*;
 mod tests {
     use super::*;
     use crate::protocol::JsonRpcResponse;
+    use crate::tool_proxy::register_mcp_tools;
+    use aion_tools::registry::ToolRegistry;
     use async_trait::async_trait;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::sync::Barrier;
@@ -21,19 +23,22 @@ mod tests {
     struct MockTransport {
         /// Responses returned in order for each request call
         responses: Mutex<Vec<serde_json::Value>>,
+        requests: Arc<Mutex<Vec<Value>>>,
     }
 
     impl MockTransport {
         fn new(responses: Vec<serde_json::Value>) -> Self {
             Self {
                 responses: Mutex::new(responses),
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
 
     #[async_trait]
     impl McpTransport for MockTransport {
-        async fn request(&self, _req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+        async fn request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            self.requests.lock().unwrap().push(serde_json::to_value(req).unwrap());
             let mut guard = self.responses.lock().unwrap();
             let value = if guard.is_empty() { json!(null) } else { guard.remove(0) };
             Ok(JsonRpcResponse {
@@ -76,6 +81,96 @@ mod tests {
 
     fn make_manager_with_servers(entries: Vec<(&str, bool, Box<dyn McpTransport>)>) -> McpManager {
         McpManager::new_for_test(entries)
+    }
+
+    #[tokio::test]
+    async fn call_tool_reads_resource_link_content() {
+        let transport = MockTransport::new(vec![
+            json!({"content": [
+                {"type": "text", "text": "Schema:"},
+                {"type": "resource_link", "uri": "mcp://schema/forecast",
+                 "name": "forecast", "mimeType": "application/json"}
+            ]}),
+            json!({"contents": [{"uri": "mcp://schema/forecast",
+                "text": "{\"measures\":[\"forecast.count\"]}"}]}),
+        ]);
+        let requests = Arc::clone(&transport.requests);
+        let manager = make_manager_with_servers(vec![
+            ("test", true, Box::new(transport)),
+            ("other", true, Box::new(ErrorTransport)),
+        ]);
+        let result = manager
+            .call_tool(
+                "test",
+                "query_business_data",
+                json!({
+                    "action": "inspect", "queries": []
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, "Schema:\n{\"measures\":[\"forecast.count\"]}");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["method"], "tools/call");
+        assert_eq!(requests[1]["method"], "resources/read");
+        assert_eq!(requests[1]["params"], json!({"uri": "mcp://schema/forecast"}));
+    }
+
+    #[tokio::test]
+    async fn large_resource_link_preserves_a_bounded_read_path() {
+        let catalog = json!({"cubes": (0..120).map(|i| json!({
+            "name": format!("cube_{i}"), "description": "字段说明".repeat(60)
+        })).collect::<Vec<_>>()})
+        .to_string();
+        assert!(catalog.len() > 61_624);
+        let transport = MockTransport::new(vec![
+            json!({"content": [{"type": "resource_link", "uri": "mcp://catalog", "name": "catalog"}]}),
+            json!({"contents": [{"uri": "mcp://catalog", "text": catalog}]}),
+            json!({"contents": [{"uri": "mcp://catalog", "text": catalog}]}),
+        ]);
+        let requests = Arc::clone(&transport.requests);
+        let manager = Arc::new(make_manager_with_servers(vec![("test", true, Box::new(transport))]));
+        let result = manager.call_tool("test", "inspect", json!({})).await.unwrap();
+        assert!(
+            result.len() < 10_000,
+            "catalog must not be discarded by the model output cap"
+        );
+        assert!(result.contains("ReadMcpResource"));
+        assert!(result.contains("mcp://catalog"));
+        let mut registry = ToolRegistry::new();
+        register_mcp_tools(&mut registry, &manager, &[], &HashMap::new());
+        let reader = registry
+            .get("ReadMcpResource")
+            .expect("read tool must actually be available");
+        let denied = reader
+            .execute(json!({"server":"test","uri":"file:///not-issued"}))
+            .await;
+        assert!(denied.is_error);
+        assert!(denied.content.contains("not returned"));
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        let page = reader
+            .execute(json!({"server":"test","uri":"mcp://catalog","pointer":"/cubes/45"}))
+            .await;
+        assert!(!page.is_error, "{}", page.content);
+        assert!(page.content.len() < 10_000);
+        let page: Value = serde_json::from_str(&page.content).unwrap();
+        assert_eq!(page["value"]["name"], "cube_45");
+        assert_eq!(requests.lock().unwrap()[2]["method"], "resources/read");
+    }
+
+    #[tokio::test]
+    async fn call_tool_resource_link_read_failure_is_not_success() {
+        let transport = MockTransport::new(vec![
+            json!({"content": [
+                {"type": "text", "text": "Schema follows"},
+                {"type": "resource_link", "uri": "mcp://schema/forecast", "name": "forecast"}
+            ]}),
+            json!({"contents": []}),
+        ]);
+        let manager = make_manager_with_servers(vec![("test", true, Box::new(transport))]);
+        let error = manager.call_tool("test", "inspect", json!({})).await.unwrap_err();
+        assert!(error.to_string().contains("No text content"));
     }
 
     fn delayed_config(delay_ms: u64, startup_timeout_ms: Option<u64>) -> McpServerConfig {

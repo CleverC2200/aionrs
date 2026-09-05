@@ -82,6 +82,8 @@ pub enum McpContent {
         #[allow(dead_code)]
         resource: Value,
     },
+    #[serde(rename = "resource_link")]
+    ResourceLink { uri: String },
 }
 
 /// Initialize request params
