@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::config::McpServerConfig;
 use super::manager::McpManager;
+use super::resource_reader::{RESOURCE_TOOL_NAME, ResourceReader};
 use aion_protocol::events::ToolCategory;
 use aion_tools::Tool;
 use aion_types::tool::{JsonSchema, ToolResult};
@@ -113,6 +114,9 @@ pub fn register_mcp_tools(
     builtin_names: &[String],
     server_configs: &HashMap<String, McpServerConfig>,
 ) {
+    if !manager.server_names().is_empty() && registry.get(RESOURCE_TOOL_NAME).is_none() {
+        registry.register(Box::new(ResourceReader(Arc::clone(manager))));
+    }
     let all_tools = manager.all_tools();
 
     // Determine which names need prefixing
@@ -120,7 +124,7 @@ pub fn register_mcp_tools(
         let original_name = &tool_def.name;
 
         // Check collision with built-in tools
-        let collides_builtin = builtin_names.iter().any(|n| n == original_name);
+        let collides_builtin = original_name == RESOURCE_TOOL_NAME || builtin_names.iter().any(|n| n == original_name);
 
         // Check collision with other MCP servers' tools
         let cross_server_collision = manager.tool_name_count(original_name) > 1;
@@ -160,12 +164,15 @@ pub fn register_single_server_tools(
     builtin_names: &[String],
     deferred: bool,
 ) {
+    if registry.get(RESOURCE_TOOL_NAME).is_none() {
+        registry.register(Box::new(ResourceReader(Arc::clone(manager))));
+    }
     let all_tools = manager.all_tools();
     let server_tools: Vec<_> = all_tools.iter().filter(|(sn, _)| *sn == server_name).collect();
 
     for (_, tool_def) in &server_tools {
         let original_name = &tool_def.name;
-        let collides_builtin = builtin_names.iter().any(|n| n == original_name);
+        let collides_builtin = original_name == RESOURCE_TOOL_NAME || builtin_names.iter().any(|n| n == original_name);
         let cross_server_collision = manager.tool_name_count(original_name) > 1;
 
         let display_name = if collides_builtin || cross_server_collision {

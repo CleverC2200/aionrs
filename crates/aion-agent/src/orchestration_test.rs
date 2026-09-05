@@ -245,6 +245,83 @@ mod tests {
 
     struct MockLargeResultTool;
 
+    #[tokio::test]
+    async fn resource_link_catalog_survives_model_limit_and_is_readable() {
+        use aion_compact::CompactLevel;
+        use aion_mcp::manager::McpManager;
+        use aion_mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+        use aion_mcp::tool_proxy::{McpToolProxy, register_mcp_tools};
+        use aion_mcp::transport::{McpError, McpTransport};
+        use std::collections::HashMap;
+
+        struct CatalogTransport;
+        #[async_trait::async_trait]
+        impl McpTransport for CatalogTransport {
+            async fn request(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+                let result = match request.method.as_str() {
+                    "tools/call" => {
+                        json!({"content":[{"type":"resource_link","uri":"mcp://catalog","name":"catalog"}]})
+                    }
+                    "resources/read" => json!({"contents":[{"uri":"mcp://catalog","text":json!({
+                        "cubes":(0..120).map(|i|json!({"name":format!("cube_{i}"),"description":"schema".repeat(100)})).collect::<Vec<_>>()
+                    }).to_string()}]}),
+                    other => panic!("Unexpected request: {other}"),
+                };
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id,
+                    result: Some(result),
+                    error: None,
+                })
+            }
+            async fn notify(&self, _: &JsonRpcRequest) -> Result<(), McpError> {
+                Ok(())
+            }
+            async fn close(&self) -> Result<(), McpError> {
+                Ok(())
+            }
+        }
+        let manager = Arc::new(McpManager::new_for_test(vec![(
+            "catalog",
+            true,
+            Box::new(CatalogTransport),
+        )]));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(McpToolProxy::new(
+            "inspect".into(),
+            "inspect".into(),
+            "catalog".into(),
+            "inspect".into(),
+            json!({"type":"object"}),
+            Arc::clone(&manager),
+            false,
+        )));
+        register_mcp_tools(&mut registry, &manager, &[], &HashMap::new());
+        for (name, input, expected) in [
+            ("inspect", json!({}), "resource_available"),
+            (
+                "ReadMcpResource",
+                json!({"server":"catalog","uri":"mcp://catalog","pointer":"/cubes/45"}),
+                "cube_45",
+            ),
+        ] {
+            let call = ContentBlock::ToolUse {
+                id: "read-catalog".into(),
+                name: name.into(),
+                input,
+                extra: None,
+            };
+            let (result, _, _) = execute_single(&registry, &call, None, CompactLevel::Off, false, 10_000).await;
+            let ContentBlock::ToolResult { content, is_error, .. } = result else {
+                panic!("Expected tool result")
+            };
+            assert!(!is_error, "{content}");
+            assert!(content.len() <= 10_000);
+            assert!(content.contains(expected), "{content}");
+            assert!(!content.contains("MCP_RESULT_TOO_LARGE"));
+        }
+    }
+
     #[async_trait::async_trait]
     impl Tool for MockLargeResultTool {
         fn name(&self) -> &str {

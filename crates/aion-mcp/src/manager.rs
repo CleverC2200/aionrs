@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -8,9 +9,10 @@ use serde_json::json;
 
 use super::config::{McpServerConfig, TransportType};
 use super::protocol::{
-    ClientCapabilities, ClientInfo, InitializeParams, InitializeResult, JsonRpcRequest, McpResource, McpToolDef,
-    McpToolResult, ResourcesListResult, ResourcesReadResult, ToolsListResult,
+    ClientCapabilities, ClientInfo, InitializeParams, InitializeResult, JsonRpcRequest, McpContent, McpResource,
+    McpToolDef, McpToolResult, ResourcesListResult, ResourcesReadResult, ToolsListResult,
 };
+use super::resource_reader::{RESOURCE_TOOL_NAME, resource_page};
 use super::transport::sse::SseTransport;
 use super::transport::stdio::StdioTransport;
 use super::transport::streamable_http::StreamableHttpTransport;
@@ -33,6 +35,8 @@ pub struct McpManager {
     servers: HashMap<String, McpServer>,
     /// Monotonically increasing request ID counter for all JSON-RPC calls
     next_id: AtomicU64,
+    /// Only links returned by this manager's tool calls may be read by the model.
+    tool_resources: Mutex<HashSet<(String, String)>>,
 }
 
 impl McpManager {
@@ -81,6 +85,7 @@ impl McpManager {
         Ok(Self {
             servers,
             next_id: AtomicU64::new(10),
+            tool_resources: Mutex::new(HashSet::new()),
         })
     }
 
@@ -111,6 +116,10 @@ impl McpManager {
     pub async fn connect_one(&mut self, name: String, config: &McpServerConfig) -> Result<Vec<String>, McpError> {
         let server = Self::with_startup_timeout(&name, config, Self::connect_server(&name, config)).await?;
         let tool_names: Vec<String> = server.tools.iter().map(|t| t.name.clone()).collect();
+        self.tool_resources
+            .get_mut()
+            .map_err(|_| McpError::Transport("Resource registry unavailable".into()))?
+            .retain(|(server_name, _)| server_name != &name);
         tracing::info!(target: "aion_mcp", server = %name, tools = server.tools.len(), resources = server.supports_resources, "mcp server connected");
         self.servers.insert(name, server);
         Ok(tool_names)
@@ -263,17 +272,60 @@ impl McpManager {
         let mut text_parts = Vec::new();
         for content in &tool_result.content {
             match content {
-                super::protocol::McpContent::Text { text } => text_parts.push(text.clone()),
-                super::protocol::McpContent::Image { mime_type, .. } => {
+                McpContent::Text { text } => text_parts.push(text.clone()),
+                McpContent::Image { mime_type, .. } => {
                     text_parts.push(format!("[image: {}]", mime_type));
                 }
-                super::protocol::McpContent::Resource { .. } => {
+                McpContent::Resource { .. } => {
                     text_parts.push("[resource]".to_string());
+                }
+                McpContent::ResourceLink { uri } => {
+                    // Resolve through the originating MCP session, never by fetching the URI directly.
+                    let text = self.read_resource(server_name, uri).await?;
+                    self.tool_resources
+                        .lock()
+                        .map_err(|_| McpError::Transport("Resource registry unavailable".into()))?
+                        .insert((server_name.to_owned(), uri.clone()));
+                    if text.len() <= 4_000 {
+                        text_parts.push(text);
+                    } else {
+                        text_parts.push(
+                            json!({
+                                "status": "resource_available", "bytes": text.len(),
+                                "read_tool": RESOURCE_TOOL_NAME,
+                                "arguments": {"server": server_name, "uri": uri, "pointer": ""},
+                                "message": "Read this resource by JSON pointer and page before choosing query fields."
+                            })
+                            .to_string(),
+                        );
+                    }
                 }
             }
         }
 
         Ok(text_parts.join("\n"))
+    }
+
+    /// Read only a tool-issued resource, with bounded model-facing JSON navigation.
+    pub(crate) async fn read_tool_resource(
+        &self,
+        server: &str,
+        uri: &str,
+        pointer: &str,
+        offset: usize,
+    ) -> Result<String, McpError> {
+        if !self
+            .tool_resources
+            .lock()
+            .map_err(|_| McpError::Transport("Resource registry unavailable".into()))?
+            .contains(&(server.to_owned(), uri.to_owned()))
+        {
+            return Err(McpError::Transport(
+                "Resource was not returned by a tool in this MCP session; call the originating tool again".into(),
+            ));
+        }
+        let text = self.read_resource(server, uri).await?;
+        resource_page(&text, pointer, offset)
     }
 
     /// Get names of all connected servers.
@@ -363,6 +415,7 @@ impl McpManager {
         Self {
             servers,
             next_id: AtomicU64::new(10),
+            tool_resources: Mutex::new(HashSet::new()),
         }
     }
 }
