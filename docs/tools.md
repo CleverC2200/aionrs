@@ -80,6 +80,7 @@ Load full schemas for deferred tools so the LLM can invoke them. Deferred bundle
 
 - Search by tool name or a keyword from its description
 - Returns the full schemas of all matching deferred tools
+- Promotes matching schemas for subsequent model requests after successful execution; failed or denied searches do not activate tools
 
 Skills are exposed through the **Skill** tool. When plan mode is enabled, **EnterPlanMode** and **ExitPlanMode** are also registered. See [Skills](skills.md) and [Plan Mode](advanced.md#plan-mode) for details.
 

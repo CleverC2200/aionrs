@@ -274,12 +274,13 @@ impl AgentEngine {
     pub fn resume_with_provider_and_env(
         provider: Arc<dyn LlmProvider>,
         config: Config,
-        tools: ToolRegistry,
+        mut tools: ToolRegistry,
         output: Arc<dyn OutputSink>,
         session: Session,
         cwd: PathBuf,
         runtime_env: Vec<(String, String)>,
     ) -> Self {
+        tools.restore_activated_tools(&session.activated_tools);
         let system_prompt = config.system_prompt.clone().unwrap_or_default();
         let confirmer = ToolConfirmer::new(config.tools.auto_approve, config.tools.allow_list.clone());
 
@@ -670,6 +671,15 @@ impl AgentEngine {
     fn build_request_with_tool_choice(&mut self, kind: TurnKind, tool_choice: Option<ToolChoice>) -> LlmRequest {
         let image_input = self.compat.image_input();
         let tools = self.tool_definitions_for_turn(kind);
+        info!(
+            target: "aion_agent",
+            tool_count = tools.len(),
+            mcp_tool_count = tools.iter().filter(|tool| self.tools.get(&tool.name).is_some_and(|registered| registered.category() == ToolCategory::Mcp)).count(),
+            deferred_tool_count = tools.iter().filter(|tool| tool.deferred).count(),
+            plan_mode = self.plan_state.is_active,
+            request_kind = kind.diagnostic_phase(),
+            "Model request tool availability",
+        );
 
         // Build system prompt: append plan mode instructions when active
         let system = if self.plan_state.is_active {
@@ -826,6 +836,16 @@ impl AgentEngine {
             executable_results,
             executable_modifiers,
         );
+
+        for (call, result) in tool_calls.iter().zip(&tool_results) {
+            if let ContentBlock::ToolUse { id, name, input, .. } = call
+                && name == "ToolSearch"
+                && matches!(result, ContentBlock::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == id)
+                && let Some(query) = input.get("query").and_then(|value| value.as_str())
+            {
+                self.tools.activate_deferred_tools(query);
+            }
+        }
 
         let failed_tool_calls: Vec<_> = tool_calls
             .iter()
@@ -1551,6 +1571,7 @@ impl AgentEngine {
     fn save_session(&mut self) {
         if let (Some(mgr), Some(session)) = (&self.session_manager, &mut self.current_session) {
             session.messages = self.messages.clone();
+            session.activated_tools = self.tools.activated_tool_names();
             session.total_usage = self.total_usage.clone();
             session.context_state = self.context_state.clone();
             session.updated_at = Utc::now();
