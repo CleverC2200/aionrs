@@ -78,6 +78,13 @@ deferred = true    # Don't load tool schemas at startup
 
 Use `deferred = true` for MCP servers with many tools to keep the initial system prompt small.
 
+After a successful `ToolSearch`, matching schemas are included in subsequent model
+requests. Activation is stored independently of message history and survives
+compaction and session resume. Resume reconnects configured MCP servers and resolves
+saved tool names against their current schemas; it never restores stale schemas or
+bypasses the current tool policy. Plan mode and tool-free summarization requests
+continue to apply their normal restrictions.
+
 ## Tool Naming
 
 - MCP tool names are used directly when there's no conflict

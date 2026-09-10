@@ -526,6 +526,7 @@ mod tests {
 
     fn sample_session(id: &str, model: &str) -> Session {
         Session {
+            activated_tools: Vec::new(),
             id: id.to_string(),
             forked_from: None,
             root_id: None,

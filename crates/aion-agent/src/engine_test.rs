@@ -964,6 +964,7 @@ mod tests_compact {
         context_state.compact_count = 2;
         context_state.microcompact_count = 5;
         let session = Session {
+            activated_tools: Vec::new(),
             id: "resume-context".into(),
             forked_from: None,
             root_id: None,
@@ -1707,6 +1708,7 @@ mod tests_handle_command {
     use aion_providers::provider::LlmProvider;
     use aion_tools::Tool;
     use aion_tools::registry::ToolRegistry;
+    use aion_tools::tool_search::ToolSearchTool;
     use aion_types::llm::{LlmEvent, LlmRequest, ToolChoice};
     use aion_types::message::{ContentBlock, ImageInputCapability, ImageUrl, Message, Role, StopReason, TokenUsage};
     use aion_types::tool::ToolResult;
@@ -1719,6 +1721,7 @@ mod tests_handle_command {
     use crate::compact::state::CompactState;
     use crate::confirm::ToolConfirmer;
     use crate::output::OutputSink;
+    use crate::tool_policy::ToolPolicy;
     use crate::turn::TurnKind;
 
     struct NullOutput;
@@ -1780,6 +1783,107 @@ mod tests_handle_command {
             plan_active_flag: None,
             cache_detector: CacheBreakDetector::new(),
             commands: default_registry(),
+        }
+    }
+
+    struct DeferredQueryTool;
+
+    #[async_trait::async_trait]
+    impl Tool for DeferredQueryTool {
+        fn name(&self) -> &str {
+            "query_business_data"
+        }
+        fn description(&self) -> &str {
+            "Query business data"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type":"object","properties":{"queries":{"type":"array","items":{"type":"object"}}},"required":["queries"]})
+        }
+        fn is_concurrency_safe(&self, _: &Value) -> bool {
+            true
+        }
+        fn is_deferred(&self) -> bool {
+            true
+        }
+        fn category(&self) -> ToolCategory {
+            ToolCategory::Mcp
+        }
+        async fn execute(&self, _: Value) -> ToolResult {
+            ToolResult {
+                content: "[]".into(),
+                is_error: false,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_search_promotes_schema_for_next_request_and_continuation() {
+        let mut engine = make_engine();
+        engine.tools.register(Box::new(DeferredQueryTool));
+        let definitions = engine.tools.to_tool_defs();
+        engine.tools.register(Box::new(ToolSearchTool::new(definitions)));
+        assert!(engine.build_request(TurnKind::Normal).tools[0].deferred);
+        let calls = vec![ContentBlock::ToolUse {
+            id: "search-1".into(),
+            name: "ToolSearch".into(),
+            extra: None,
+            input: serde_json::json!({"query":"query_business_data"}),
+        }];
+        let output = engine.execute_tool_round(&calls).await.unwrap();
+        assert!(matches!(
+            &output.tool_results[0],
+            ContentBlock::ToolResult { is_error: false, .. }
+        ));
+        engine.messages.push(Message::new(Role::Assistant, calls));
+        engine.messages.push(Message::new(Role::User, output.tool_results));
+        for _ in 0..3 {
+            let request = engine.build_request(TurnKind::Normal);
+            let query = request.tools.iter().find(|t| t.name == "query_business_data").unwrap();
+            assert!(
+                !query.deferred,
+                "ToolSearch success must promote the next provider schema"
+            );
+            assert_eq!(query.input_schema["properties"]["queries"]["type"], "array");
+            // History replacement during compaction must not replace the registry.
+            engine.messages = vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "continue".into(),
+                }],
+            )];
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_or_denied_search_does_not_activate_schemas() {
+        for deny_search in [false, true] {
+            let mut engine = make_engine();
+            engine.tools.register(Box::new(DeferredQueryTool));
+            let definitions = engine.tools.to_tool_defs();
+            engine.tools.register(Box::new(ToolSearchTool::new(definitions)));
+            if deny_search {
+                engine.tool_policy = ToolPolicy::allow_only(["query_business_data"]);
+            }
+            let calls = vec![ContentBlock::ToolUse {
+                id: "search-error".into(),
+                name: "ToolSearch".into(),
+                extra: None,
+                input: json!({"query": if deny_search { "query_business_data" } else { "" }}),
+            }];
+            let output = engine.execute_tool_round(&calls).await.unwrap();
+            assert!(matches!(
+                &output.tool_results[0],
+                ContentBlock::ToolResult { is_error: true, .. }
+            ));
+            assert!(
+                engine
+                    .build_request(TurnKind::Normal)
+                    .tools
+                    .iter()
+                    .find(|t| t.name == "query_business_data")
+                    .unwrap()
+                    .deferred
+            );
         }
     }
 

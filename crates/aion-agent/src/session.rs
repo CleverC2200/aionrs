@@ -33,6 +33,10 @@ pub struct Session {
     pub total_usage: TokenUsage,
     #[serde(default)]
     pub context_state: ContextState,
+    /// Schema activation survives history compaction. No schemas or credentials
+    /// are persisted here; resume resolves names against freshly registered tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activated_tools: Vec<String>,
     pub messages: Vec<Message>,
 }
 
@@ -93,6 +97,7 @@ impl SessionManager {
             total_usage: TokenUsage::default(),
             context_state: ContextState::default(),
             messages: Vec::new(),
+            activated_tools: Vec::new(),
         };
         self.with_session_lock(&session.id, || {
             if self.session_exists(&session.id)? {

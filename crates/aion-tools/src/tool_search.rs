@@ -17,6 +17,20 @@ impl ToolSearchTool {
     pub fn new(tool_defs: Vec<ToolDef>) -> Self {
         Self { tool_defs }
     }
+
+    pub(crate) fn matching_tools<'a>(tool_defs: &'a [ToolDef], query: &str) -> Vec<&'a ToolDef> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query = query.to_lowercase();
+        tool_defs
+            .iter()
+            .filter(|tool| tool.deferred)
+            .filter(|tool| {
+                tool.name.to_lowercase().contains(&query) || tool.description.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -56,14 +70,8 @@ impl Tool for ToolSearchTool {
             };
         }
 
-        let query_lower = query.to_lowercase();
-        let matches: Vec<Value> = self
-            .tool_defs
-            .iter()
-            .filter(|d| d.deferred)
-            .filter(|d| {
-                d.name.to_lowercase().contains(&query_lower) || d.description.to_lowercase().contains(&query_lower)
-            })
+        let matches: Vec<Value> = Self::matching_tools(&self.tool_defs, query)
+            .into_iter()
             .map(|d| {
                 json!({
                     "name": d.name,
